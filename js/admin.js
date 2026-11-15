@@ -1,223 +1,202 @@
 /* ============================================================
-   JC VIDEO PRO — Panel de administración (local)
+   JC VIDEO PRO — Panel de administración con Supabase
    ============================================================ */
 
-import {
-  $, getPlan, setPlan, getPrices, setPrices, getAdminCode, setAdminCode,
-  DEFAULT_PRICES, getLastProjectId, setLastProjectId, fmtTime, bytes, escapeHtml,
-} from "./core.js";
-import { getStats, deleteProjectRecord, exportBackup } from "./storage.js";
+import { supabase, getCurrentUser, signInWithEmail, signInWithGoogle, signOutUser, getAdminData } from "./supabase.js";
+import { $, $$, escapeHtml } from "./core.js";
 
-const AUTH_KEY = "jcvp.adminAuth";
-const ADS_KEY = "jcvp.ads";
+const ADMIN_EMAIL = "soporte@jcads.net";
 
-function isAuthed() {
-  try { return sessionStorage.getItem(AUTH_KEY) === "1"; } catch { return false; }
-}
-
-function login() {
-  const ok = $("#gateCode")?.value === getAdminCode();
-  if (!ok) {
-    const err = $("#gateError");
-    if (err) err.textContent = "Código incorrecto. Inténtalo de nuevo.";
-    return;
+async function initAdmin() {
+  const user = await getCurrentUser();
+  if (user && user.email === ADMIN_EMAIL) {
+    showWelcomeScreen(user);
+  } else {
+    showGate();
   }
-  try { sessionStorage.setItem(AUTH_KEY, "1"); } catch { /* ignore */ }
-  showApp();
+  bindAdminEvents();
 }
 
-function showApp() {
+function showGate() {
   const gate = $("#gate");
+  const welcome = $("#welcomeGate");
+  const app = $("#adminApp");
+  if (gate) gate.style.display = "grid";
+  if (welcome) welcome.style.display = "none";
+  if (app) app.hidden = true;
+}
+
+function showWelcomeScreen(user) {
+  const gate = $("#gate");
+  const welcome = $("#welcomeGate");
   const app = $("#adminApp");
   if (gate) gate.style.display = "none";
+  if (welcome) welcome.style.display = "grid";
+  if (app) app.hidden = true;
+}
+
+function showAdminApp() {
+  const gate = $("#gate");
+  const welcome = $("#welcomeGate");
+  const app = $("#adminApp");
+  if (gate) gate.style.display = "none";
+  if (welcome) welcome.style.display = "none";
   if (app) app.hidden = false;
-  renderAll();
+  loadSupabaseData();
 }
 
-function renderAll() {
-  renderStats();
-  renderPrices();
-  renderAds();
-  renderPlan();
-  renderProjects();
-  renderSecurity();
-}
-
-async function renderStats() {
-  const grid = $("#statsGrid");
-  if (!grid) return;
-  grid.innerHTML = `<div class="stat-card"><div class="sc-label">Cargando…</div><div class="sc-value">…</div></div>`;
-  try {
-    const stats = await getStats();
-    const quotaMB = stats.quota?.quota ? (stats.quota.quota / 1048576).toFixed(0) + " MB" : "—";
-    const plan = getPlan();
-    const planLabel = { free: "Gratis", premium: "Premium", pro: "Profesional" }[plan] || plan;
-    grid.innerHTML = [
-      stat("Proyectos", stats.projectCount, "guardados en este navegador"),
-      stat("Archivos", stats.mediaCount, "en la biblioteca local"),
-      stat("Espacio usado", bytes(stats.mediaBytes), "archivos multimedia"),
-      stat("Timeline total", stats.totalMinutes >= 1 ? stats.totalMinutes.toFixed(1) + " min" : Math.round(stats.totalMinutes * 60) + " s", "suma de todos los proyectos"),
-      stat("Plan actual", planLabel, "demo local, sin cobro"),
-      stat("Cuota del navegador", quotaMB, stats.quota?.usage ? bytes(stats.quota.usage) + " usados" : "no disponible"),
-    ].join("");
-  } catch (err) {
-    console.error(err);
-    grid.innerHTML = `<div class="stat-card"><div class="sc-label">Error</div><div class="sc-value">—</div><div class="sc-sub">No se pudieron leer los datos locales.</div></div>`;
-  }
-}
-
-function stat(label, value, sub) {
-  return `<div class="stat-card">
-    <div class="sc-label">${escapeHtml(String(label))}</div>
-    <div class="sc-value">${escapeHtml(String(value))}</div>
-    <div class="sc-sub">${escapeHtml(String(sub || ""))}</div>
-  </div>`;
-}
-
-function renderPrices() {
-  const prices = getPrices();
-  if ($("#pricePremium")) $("#pricePremium").value = prices.premium.toFixed(2);
-  if ($("#pricePro")) $("#pricePro").value = prices.pro.toFixed(2);
-  if ($("#priceAnnual")) $("#priceAnnual").value = prices.annual.toFixed(2);
-}
-
-function renderAds() {
-  let ads = {};
-  try { ads = JSON.parse(localStorage.getItem(ADS_KEY)) || {}; } catch { ads = {}; }
-  if ($("#adsEnabled")) $("#adsEnabled").checked = !!ads.enabled;
-  if ($("#admobApp")) $("#admobApp").value = ads.admobApp || "";
-  if ($("#admobBanner")) $("#admobBanner").value = ads.admobBanner || "";
-  if ($("#admobRewarded")) $("#admobRewarded").value = ads.admobRewarded || "";
-  if ($("#adsWeb")) $("#adsWeb").value = ads.adsWeb || "";
-}
-
-function renderPlan() {
-  if ($("#planSelect")) $("#planSelect").value = getPlan();
-}
-
-async function renderProjects() {
-  const body = $("#projectsBody");
-  if (!body) return;
-  try {
-    const stats = await getStats();
-    const list = (stats.projects || []).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    body.innerHTML = list.length ? list.map((p) => {
-      const clips = (p.tracks || []).reduce((n, t) => n + (t.clips?.length || 0), 0);
-      const date = new Date(p.updatedAt || p.savedAt || Date.now()).toLocaleString("es", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-      return `<tr>
-        <td>${escapeHtml(p.name || "Proyecto")}</td>
-        <td>${escapeHtml(p.aspect || "9:16")}</td>
-        <td>${clips}</td>
-        <td>${escapeHtml(date)}</td>
-        <td style="text-align:right"><button class="btn tiny danger" data-del-project="${p.id}">Eliminar</button></td>
-      </tr>`;
-    }).join("") : `<tr><td colspan="5" style="color:var(--muted)">Todavía no hay proyectos guardados.</td></tr>`;
-
-    const info = $("#storageInfo");
-    if (info) {
-      info.textContent = stats.quota?.usage
-        ? `Uso aproximado del navegador: ${bytes(stats.quota.usage)} de ${bytes(stats.quota.quota || 0)}.`
-        : "El navegador no informa la cuota de almacenamiento.";
+function bindAdminEvents() {
+  // Password eye toggle
+  $("#adminEyeBtn")?.addEventListener("click", () => {
+    const pwdInput = $("#adminPasswordInput");
+    if (pwdInput) {
+      pwdInput.type = pwdInput.type === "password" ? "text" : "password";
     }
-  } catch (err) {
-    console.error(err);
-    body.innerHTML = `<tr><td colspan="5" style="color:var(--danger)">No se pudieron cargar los proyectos.</td></tr>`;
-  }
-}
-
-function renderSecurity() {
-  if ($("#adminCodeNew")) $("#adminCodeNew").value = "";
-}
-
-/* ---------------- Acciones ---------------- */
-function bind() {
-  $("#gateBtn")?.addEventListener("click", login);
-  $("#gateCode")?.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
-
-  $("#projectsBody")?.addEventListener("click", async (e) => {
-    const btn = e.target.closest("[data-del-project]");
-    if (!btn) return;
-    const id = btn.dataset.delProject;
-    const name = btn.closest("tr")?.querySelector("td")?.textContent || "el proyecto";
-    if (!window.confirm(`¿Eliminar «${name}»? Los archivos multimedia se conservan.`)) return;
-    await deleteProjectRecord(id);
-    if (getLastProjectId() === id) setLastProjectId("");
-    renderProjects();
-    renderStats();
   });
 
-  $("#logoutBtn")?.addEventListener("click", () => {
-    try { sessionStorage.removeItem(AUTH_KEY); } catch { /* ignore */ }
+  $("#gateLoginBtn")?.addEventListener("click", async () => {
+    const password = $("#adminPasswordInput")?.value || "";
+    const errNode = $("#gateError");
+    if (!password) {
+      if (errNode) errNode.textContent = "Introduce la contraseña.";
+      return;
+    }
+    if (errNode) errNode.textContent = "Iniciando sesión en Supabase…";
+    try {
+      const res = await signInWithEmail(ADMIN_EMAIL, password);
+      const user = res.user;
+      if (user?.email !== ADMIN_EMAIL) {
+        throw new Error("Acceso denegado: solo soporte@jcads.net es administrador.");
+      }
+      showWelcomeScreen(user);
+    } catch (err) {
+      console.error(err);
+      if (errNode) errNode.textContent = "Error: " + (err.message || "Credenciales inválidas.");
+    }
+  });
+
+  $("#gateGoogleBtn")?.addEventListener("click", async () => {
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      const errNode = $("#gateError");
+      if (errNode) errNode.textContent = "Error con Google: " + err.message;
+    }
+  });
+
+  $("#goToAdminPanelBtn")?.addEventListener("click", () => {
+    showAdminApp();
+  });
+
+  $("#goToPublicWebBtn")?.addEventListener("click", () => {
+    window.location.href = "index.html?pro_preview=1";
+  });
+
+  $("#adminLogoutBtn")?.addEventListener("click", async () => {
+    await signOutUser();
     location.reload();
   });
 
+  $("#logoutBtn")?.addEventListener("click", async () => {
+    await signOutUser();
+    location.reload();
+  });
+
+  // Settings saves
   $("#savePrices")?.addEventListener("click", () => {
-    const premium = Number($("#pricePremium").value);
-    const pro = Number($("#pricePro").value);
-    const annual = Number($("#priceAnnual").value);
-    if (![premium, pro, annual].every((n) => Number.isFinite(n) && n >= 0)) {
-      setStatus("#pricesStatus", "Introduce números válidos.", true);
-      return;
+    const prices = {
+      premium: Number($("#pricePremium").value),
+      pro: Number($("#pricePro").value),
+      annual: Number($("#priceAnnual").value),
+    };
+    try {
+      localStorage.setItem("jcvp.prices", JSON.stringify(prices));
+      setStatus("#pricesStatus", "Precios guardados correctamente.");
+    } catch (err) {
+      setStatus("#pricesStatus", "Error al guardar.", true);
     }
-    setPrices({ premium, pro, annual });
-    setStatus("#pricesStatus", "Precios guardados. Se aplican en el editor de inmediato.");
   });
 
-  $("#applyPlan")?.addEventListener("click", () => {
-    const plan = $("#planSelect").value;
-    setPlan(plan);
-    setStatus("#planStatus", "Plan aplicado en este navegador (demo, sin pago).");
-    renderStats();
-  });
-
-  $("#saveAds")?.addEventListener("click", () => {
-    const data = {
-      enabled: !!$("#adsEnabled")?.checked,
-      admobApp: $("#admobApp")?.value.trim() || "",
-      admobBanner: $("#admobBanner")?.value.trim() || "",
-      admobRewarded: $("#admobRewarded")?.value.trim() || "",
-      adsWeb: $("#adsWeb")?.value.trim() || "",
+  $("#saveMonetization")?.addEventListener("click", () => {
+    const config = {
+      tutorialVideoUrl: $("#tutorialVideoUrl")?.value.trim() || "",
+      adsterraBanner: $("#adsterraBanner")?.value.trim() || "",
+      adsterraDirectLink: $("#adsterraDirectLink")?.value.trim() || "",
+      enabled: true,
       savedAt: new Date().toISOString(),
     };
-    try { localStorage.setItem(ADS_KEY, JSON.stringify(data)); } catch { /* ignore */ }
-    setStatus("#adsStatus", "Configuración guardada. No se muestran anuncios hasta integrar el SDK.");
-  });
-
-  $("#saveAdminCode")?.addEventListener("click", () => {
-    const code = $("#adminCodeNew")?.value.trim();
-    if (!code || code.length < 4) {
-      setStatus("#codeStatus", "Usa al menos 4 caracteres.", true);
-      return;
-    }
-    setAdminCode(code);
-    setStatus("#codeStatus", "Código actualizado. Se pedirá la próxima vez que entres.");
-    $("#adminCodeNew").value = "";
-  });
-
-  $("#backupBtn")?.addEventListener("click", async () => {
-    const data = await exportBackup();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `JC_VIDEO_PRO_backup_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    setStatus("#storageInfo", "Copia descargada (sin archivos multimedia).");
-  });
-
-  $("#clearBtn")?.addEventListener("click", () => {
-    const ok = window.confirm("Se borrarán TODOS los proyectos, archivos y ajustes de este navegador. ¿Continuar?");
-    if (!ok) return;
     try {
-      indexedDB.deleteDatabase("jcvp-db");
-      Object.keys(localStorage).filter((k) => k.startsWith("jcvp.")).forEach((k) => localStorage.removeItem(k));
-      sessionStorage.removeItem(AUTH_KEY);
+      localStorage.setItem("jcvp.monetization", JSON.stringify(config));
+      setStatus("#monetizationStatus", "Configuración guardada correctamente.");
     } catch (err) {
-      console.error(err);
+      setStatus("#monetizationStatus", "Error al guardar.", true);
     }
-    setTimeout(() => location.reload(), 350);
   });
+}
+
+async function loadSupabaseData() {
+  const grid = $("#statsGrid");
+  const usersBody = $("#usersBody");
+  const ticketsBody = $("#ticketsBody");
+  const paymentsBody = $("#paymentsBody");
+
+  if (grid) grid.innerHTML = `<div class="stat-card"><div class="sc-label">Cargando Supabase…</div><div class="sc-value">…</div></div>`;
+
+  const data = await getAdminData();
+  const users = data.users || [];
+  const payments = data.payments || [];
+  const tickets = data.tickets || [];
+
+  if (grid) {
+    grid.innerHTML = [
+      statCard("Usuarios", users.length, "registrados en profiles"),
+      statCard("Tickets Soporte", tickets.length, "en support_tickets"),
+      statCard("Pagos / Ventas", payments.length, "registrados"),
+      statCard("Admin Activo", "soporte@jcads.net", "acceso verificado"),
+    ].join("");
+  }
+
+  if (usersBody) {
+    usersBody.innerHTML = users.length ? users.map((u) => `
+      <tr>
+        <td>${escapeHtml(u.id)}</td>
+        <td>${escapeHtml(u.email || "—")}</td>
+        <td>${escapeHtml(u.plan || "Gratis")}</td>
+        <td>${escapeHtml(new Date(u.updated_at || Date.now()).toLocaleString("es"))}</td>
+      </tr>
+    `).join("") : `<tr><td colspan="4" style="color:var(--muted)">No hay perfiles registrados en la tabla profiles aún.</td></tr>`;
+  }
+
+  if (ticketsBody) {
+    ticketsBody.innerHTML = tickets.length ? tickets.map((t) => `
+      <tr>
+        <td>${escapeHtml(new Date(t.created_at || Date.now()).toLocaleString("es"))}</td>
+        <td>${escapeHtml(t.user_email || "soporte@jcads.net")}</td>
+        <td>${escapeHtml(t.message || "")}</td>
+        <td><span style="color:var(--amber)">${escapeHtml(t.status || "pendiente")}</span></td>
+      </tr>
+    `).join("") : `<tr><td colspan="4" style="color:var(--muted)">No hay tickets de soporte pendientes.</td></tr>`;
+  }
+
+  if (paymentsBody) {
+    paymentsBody.innerHTML = payments.length ? payments.map((p) => `
+      <tr>
+        <td>${escapeHtml(p.id || "—")}</td>
+        <td>${escapeHtml(p.user_email || "—")}</td>
+        <td>$${Number(p.amount || 0).toFixed(2)}</td>
+        <td>${escapeHtml(p.plan || "Pro")}</td>
+        <td>${escapeHtml(new Date(p.created_at || Date.now()).toLocaleString("es"))}</td>
+      </tr>
+    `).join("") : `<tr><td colspan="5" style="color:var(--muted)">No hay transacciones registradas en payments.</td></tr>`;
+  }
+}
+
+function statCard(label, value, sub) {
+  return `<div class="stat-card">
+    <div class="sc-label">${escapeHtml(label)}</div>
+    <div class="sc-value">${escapeHtml(String(value))}</div>
+    <div class="sc-sub">${escapeHtml(sub)}</div>
+  </div>`;
 }
 
 function setStatus(sel, text, error = false) {
@@ -227,6 +206,5 @@ function setStatus(sel, text, error = false) {
   node.style.color = error ? "var(--danger)" : "var(--green)";
 }
 
-bind();
-if (isAuthed()) showApp();
-else $("#gateCode")?.focus();
+// Check initial load
+initAdmin();

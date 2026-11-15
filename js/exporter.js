@@ -471,23 +471,35 @@ function showSuccess(blob, { w, h, mime, audio = false }) {
       : "Sí (plan Gratis)";
 
   openModal(`
-    <h2>¡Video exportado!</h2>
-    <p class="modal-sub">El archivo se descargó a tu dispositivo. También puedes verlo aquí antes de compartirlo.</p>
-    <video src="${url}" controls playsinline style="width:100%;max-height:46vh;border-radius:12px;background:#000;border:1px solid var(--line)"></video>
+    <h2>¡Video exportado con éxito!</h2>
+    <p class="modal-sub">El archivo se descargó a tu dispositivo. Compártelo directamente en redes sociales o copia el enlace:</p>
+    <video src="${url}" controls playsinline style="width:100%;max-height:36vh;border-radius:12px;background:#000;border:1px solid var(--line)"></video>
+    
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin:14px 0;">
+      <a class="btn ghost" href="https://studio.youtube.com" target="_blank" rel="noopener" style="justify-content:center;">▶️ YouTube Studio</a>
+      <a class="btn ghost" href="https://www.tiktok.com/upload" target="_blank" rel="noopener" style="justify-content:center;">🎵 TikTok</a>
+      <a class="btn ghost" href="https://www.instagram.com" target="_blank" rel="noopener" style="justify-content:center;">📸 Instagram Reels</a>
+      <a class="btn ghost" href="https://www.facebook.com" target="_blank" rel="noopener" style="justify-content:center;">📘 Facebook</a>
+      <a class="btn ghost" href="https://api.whatsapp.com/send?text=¡Mira%20mi%20video%20creado%20con%20JC%20VIDEO%20PRO!%20https://jcads.net" target="_blank" rel="noopener" style="justify-content:center;">💬 WhatsApp</a>
+      <button class="btn ghost" id="btnCopyShareLink" style="justify-content:center;">🔗 Copiar Enlace</button>
+    </div>
+
     <div class="export-info">
       <div><b>Archivo:</b> ${escapeHtml(filename)}</div>
       <div><b>Tamaño:</b> ${escapeHtml(sizeText)} · <b>Resolución:</b> ${w}×${h}</div>
-      <div><b>Formato:</b> ${mime.includes("mp4") ? "MP4" : "WebM"}${mime.includes("mp4") ? "" : " · el navegador no ofreció MP4"}</div>
-      <div><b>Audio:</b> ${audio ? "Incluido" : "Sin audio (el proyecto no tiene pistas audibles o el navegador no pudo grabarlo)"}</div>
       <div><b>Marca de agua:</b> ${watermarkLabel}</div>
     </div>
-    ${mime.includes("mp4") ? "" : `<p class="mini-help">La conversión automática a MP4 con FFmpeg.wasm se añadirá en una próxima fase. Mientras tanto, WebM es compatible con la mayoría de navegadores y redes.</p>`}
     <div class="modal-actions">
       <a class="btn ghost" href="${url}" download="${escapeHtml(filename)}">Descargar de nuevo</a>
       <button class="btn ghost" id="expAgain">Exportar otro</button>
       <button class="btn primary" data-close>Cerrar</button>
     </div>
   `, { wide: true });
+
+  $("#btnCopyShareLink")?.addEventListener("click", () => {
+    navigator.clipboard?.writeText(url);
+    toast("Enlace del video copiado al portapapeles.", "ok");
+  });
 
   $("#expAgain")?.addEventListener("click", () => {
     closeModal(true);

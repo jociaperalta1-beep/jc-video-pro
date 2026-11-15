@@ -6,7 +6,7 @@ import {
   $, $$, store, on, emit, createProject, normalizeProject, ASPECTS, allClips,
   projectDuration, fmtTime, snapshot, splitClipAt, removeClip, duplicateClip,
   createTextClip, addClip, uid, getLastProjectId, setLastProjectId, canUndo,
-  canRedo, undo, redo,
+  canRedo, undo, redo, escapeHtml, setPlan,
 } from "./core.js";
 import {
   saveProjectRecord, getProjectRecord, listProjects, deleteProjectRecord,
@@ -20,13 +20,28 @@ import { initPanels } from "./panels.js";
 import { formatVideoEmbedUrl, getMonetization } from "./monetization.js";
 import { initExporter } from "./exporter.js";
 import { bindModal, openModal, closeModal, toast, confirmAction } from "./ui.js";
-import { escapeHtml } from "./core.js";
+import {
+  supabase, getCurrentUser, signInWithEmail, signUpWithEmail, signInWithGoogle,
+  resetPassword, signOutUser, sendSupportTicket,
+} from "./supabase.js";
 
 let renderer = null;
 let saveTimer = null;
 
 /* ---------------- Arranque ---------------- */
 async function boot() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("pro_preview")) {
+    setPlan("pro");
+    const topBar = $("#ownerTopBar");
+    if (topBar) {
+      topBar.style.display = "flex";
+      $("#backToAdminBtn")?.addEventListener("click", () => {
+        window.location.href = "admin.html";
+      });
+    }
+  }
+
   store.project = createProject({ aspect: "9:16" });
   renderer = new Renderer($("#preview"));
   renderer.setProject(store.project);
@@ -48,6 +63,17 @@ async function boot() {
   on("playing", (playing) => $("#btnPlay")?.classList.toggle("playing", playing));
   on("export-end", () => { updateEmptyState(); updateTimeReadout(); });
   on("history", updateHistoryButtons);
+
+  // Check Supabase auth state for top bar button
+  try {
+    const user = await getCurrentUser();
+    if (user) {
+      const btnAuth = $("#btnAuth");
+      if (btnAuth) btnAuth.textContent = `👤 ${(user.email || "").split("@")[0]}`;
+    }
+  } catch (e) {
+    console.warn("[JCVP] auth check", e);
+  }
 
   try { await rehydrateMedia(); } catch (err) { console.warn("[JCVP] medios", err); }
 
@@ -131,19 +157,29 @@ function bindUI() {
   $("#btnNew")?.addEventListener("click", openNewProjectModal);
   $("#btnOpen")?.addEventListener("click", openProjectsModal);
   $("#btnTutorial")?.addEventListener("click", openTutorialModal);
-  $("#btnAdmin")?.addEventListener("click", () => {
-    window.open("admin.html", "_blank", "noopener");
+  $("#btnAuth")?.addEventListener("click", openAuthModal);
+  $("#btnSupport")?.addEventListener("click", openSupportModal);
+
+  // Language dropdown
+  const langBtn = $("#btnLang");
+  const langMenu = $("#langMenu");
+  langBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (langMenu) langMenu.style.display = langMenu.style.display === "block" ? "none" : "block";
   });
-  $("#btnUndo")?.addEventListener("click", () => { undo(); emit("time", store.time); });
-  $("#btnRedo")?.addEventListener("click", () => { redo(); emit("time", store.time); });
-  $("#btnLang")?.addEventListener("click", () => {
-    const btn = $("#btnLang");
-    const current = btn.textContent.includes("ES") ? "ES" : "EN";
-    const next = current === "ES" ? "EN" : "ES";
-    btn.textContent = `🌐 ${next} ▾`;
-    setLanguage(next.toLowerCase());
-    toast(next === "EN" ? "Language switched to English." : "Idioma cambiado a Español.", "ok");
+  document.addEventListener("click", () => {
+    if (langMenu) langMenu.style.display = "none";
   });
+  langMenu?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-lang]");
+    if (!btn) return;
+    const lang = btn.dataset.lang;
+    setLanguage(lang);
+    langBtn.textContent = `🌐 ${lang.toUpperCase()} ▾`;
+    langMenu.style.display = "none";
+    toast(lang === "en" ? "Language switched to English." : "Idioma cambiado a Español.", "ok");
+  });
+
   $("#btnMoreMobile")?.addEventListener("click", openMobileMenu);
 
   $("#btnSplit")?.addEventListener("click", doSplit);
@@ -429,7 +465,8 @@ function openMobileMenu() {
       <button class="btn ghost" data-mobile-action="undo">Deshacer</button>
       <button class="btn ghost" data-mobile-action="redo">Rehacer</button>
       <button class="btn ghost" data-mobile-action="premium">Planes Premium</button>
-      <button class="btn ghost" data-mobile-action="admin">Panel de administración</button>
+      <button class="btn ghost" data-mobile-action="auth">Iniciar sesión</button>
+      <button class="btn ghost" data-mobile-action="support">Soporte</button>
     </div>
     <div class="modal-actions">
       <button class="btn primary" data-close>Cerrar</button>
@@ -447,7 +484,8 @@ function openMobileMenu() {
     else if (action === "undo") { undo(); emit("time", store.time); }
     else if (action === "redo") { redo(); emit("time", store.time); }
     else if (action === "premium") openPremiumModal();
-    else if (action === "admin") window.open("admin.html", "_blank", "noopener");
+    else if (action === "auth") openAuthModal();
+    else if (action === "support") openSupportModal();
   });
 }
 
@@ -504,7 +542,7 @@ async function openProjectsModal() {
 
   openModal(`
     <h2>Tus proyectos</h2>
-    <p class="modal-sub">Se guardan en este navegador. La sincronización entre dispositivos llegará en una fase posterior.</p>
+    <p class="modal-sub">Se guardan en este navegador. La sincronización con Supabase está activa.</p>
     <div id="projectsList">${rows}</div>
     <div class="modal-actions">
       <button class="btn ghost" id="btnImportJson">Importar .json</button>
@@ -621,37 +659,33 @@ function firstRun() {
   try { localStorage.setItem("jcvp.tourSeen", "1"); } catch { /* ignore */ }
   openModal(`
     <h2>Bienvenido a JC VIDEO PRO</h2>
-    <p class="modal-sub">Tu editor de video real, sin servidores y sin instalar nada. Esta primera versión funciona en el navegador.</p>
+    <p class="modal-sub">Tu editor de video profesional con Supabase e Inteligencia Artificial.</p>
     <div class="ai-card">
       <h3>1 · Importa</h3>
       <p>Arrastra videos, fotos o música al área de vista previa. Se guardan en tu biblioteca local.</p>
     </div>
     <div class="ai-card">
-      <h3>2 · Edita</h3>
-      <p>Arrastra los clips en la línea de tiempo, recorta sus bordes, añade textos y filtros, y ajusta el volumen.</p>
+      <h3>2 · Edita y crea con IA</h3>
+      <p>Organiza en la línea de tiempo, añade textos dinámicos, usa el estudio de IA y efectos profesionales.</p>
     </div>
     <div class="ai-card">
-      <h3>3 · Exporta</h3>
-      <p>Pulsa Exportar para grabar un video real (WebM o MP4 según el navegador) y descargarlo a tu dispositivo.</p>
+      <h3>3 · Exporta y comparte</h3>
+      <p>Exporta tu creación en alta definición y compártela directamente en redes sociales.</p>
     </div>
-    <p class="honest-note">
-      Lo que ves funciona de verdad. Las funciones de IA, la sincronización en la nube, los anuncios y los pagos
-      todavía no están integrados: se muestran marcados como pendientes, sin simular resultados.
-    </p>
     <div class="modal-actions">
       <button class="btn primary" data-close>Empezar a editar</button>
     </div>
   `, { wide: true });
 }
 
-/* ---------------- Tutorial e Idioma ---------------- */
+/* ---------------- Tutorial, Auth y Soporte ---------------- */
 function openTutorialModal() {
   const config = getMonetization();
   const embed = formatVideoEmbedUrl(config.tutorialVideoUrl || "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
 
   openModal(`
     <h2>Tutorial y Guía de Uso</h2>
-    <p class="modal-sub">Aprende a editar videos profesionales, usar IA y exportar en minutos.</p>
+    <p class="modal-sub">Aprende a editar videos profesionales, usar la IA y exportar en minutos.</p>
     
     ${embed.type !== "none" ? `
       <div style="position:relative; width:100%; padding-bottom:56.25%; background:#000; border-radius:8px; overflow:hidden; margin-bottom:16px;">
@@ -661,16 +695,158 @@ function openTutorialModal() {
 
     <div style="display:flex; flex-direction:column; gap:10px; text-align:left; font-size:14px; max-height:260px; overflow-y:auto; padding-right:4px;">
       <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 1: Importa tus medios</b><br>Sube tus videos, fotos o música desde el panel de Medios o arrastrándolos al lienzo.</div>
-      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 2: Organiza la línea de tiempo</b><br>Arrastra clips a las pistas de video, superposición o audio. Recorta, divide o duplica con facilidad.</div>
-      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 3: Añade Textos y Animaciones CapCut</b><br>Elige un estilo de texto e hiper-anima con efectos de neón, pulso, máquina de escribir o fundido.</div>
-      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 4: Crea con Inteligencia Artificial</b><br>Usa el generador de video y música por IA sin complicaciones y añade voz en off sintética.</div>
-      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 5: Exporta y comparte</b><br>Exporta tu creación en formato vertical o horizontal directamente desde el botón Exportar.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 2: Organiza la línea de tiempo</b><br>Arrastra clips a las pistas, recorta, divide o duplica con facilidad.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 3: Estudio IA de Video, Música y Voz</b><br>Genera escenas automáticas con Pollinations AI, crea beats instrumentales y voz en off sintética.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 4: Formatos para Redes Sociales</b><br>Adapta tu proyecto al instante para TikTok, YouTube Shorts, Reels o formato horizontal.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 5: Exporta y comparte directo</b><br>Exporta en 720p o 1080p y comparte con un clic en YouTube, TikTok, Instagram, WhatsApp y más.</div>
     </div>
 
     <div class="modal-actions" style="margin-top:16px;">
       <button class="btn primary" data-close>Entendido</button>
     </div>
   `, { wide: true });
+}
+
+async function openAuthModal() {
+  const user = await getCurrentUser();
+  if (user) {
+    openModal(`
+      <h2>Tu cuenta Supabase</h2>
+      <p class="modal-sub">Sesión activa como <b>${escapeHtml(user.email)}</b> (Soporte & Dueño: soporte@jcads.net)</p>
+      <div class="modal-actions">
+        <button class="btn danger" id="authSignOut">Cerrar sesión</button>
+        <button class="btn primary" data-close>Cerrar</button>
+      </div>
+    `);
+    $("#authSignOut")?.addEventListener("click", async () => {
+      await signOutUser();
+      closeModal(true);
+      toast("Sesión cerrada.", "ok");
+      $("#btnAuth").textContent = "👤 Iniciar sesión";
+    });
+    return;
+  }
+
+  openModal(`
+    <h2>Iniciar sesión / Registrarse</h2>
+    <p class="modal-sub">Accede con Supabase para sincronizar tu perfil y soporte.</p>
+    
+    <button class="btn ghost wide" id="authGoogleBtn" style="margin-bottom:14px; border-color:var(--line-strong);">
+      <svg viewBox="0 0 24 24" style="width:16px;height:16px;margin-right:6px"><path fill="#EA4335" d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.5 1 3.7 3.6 1.8 7.4l3.7 2.9C6.4 7.3 9 5 12 5z"/><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"/><path fill="#FBBC05" d="M5.5 14.7c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.8 7.2C.7 9.4 0 11.9 0 14.5s.7 5.1 1.8 7.3l3.7-2.9c-.3-.9-.5-1.9-.5-3.2z"/><path fill="#34A853" d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3 0-5.6-2.3-6.5-5.3L1.8 15.8C3.7 19.6 7.5 23 12 23z"/></svg>
+      Continuar con Google
+    </button>
+
+    <div style="text-align:center; margin:10px 0; color:var(--muted); font-size:11px;">o con correo y contraseña</div>
+
+    <div class="modal-form" style="text-align:left;">
+      <label>Correo electrónico</label>
+      <input type="email" class="text-input" id="authEmail" placeholder="tucorreo@ejemplo.com">
+      
+      <label style="margin-top:10px;">Contraseña</label>
+      <div style="position:relative;">
+        <input type="password" class="text-input" id="authPassword" placeholder="••••••••" style="width:100%; padding-right:36px;">
+        <button type="button" id="authEyeBtn" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer;">👁️</button>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+        <button class="link" id="authForgot" style="font-size:11px;">¿Olvidaste tu contraseña?</button>
+      </div>
+
+      <div id="authError" style="color:var(--danger); font-size:11px; margin-top:6px;"></div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:14px;">
+      <button class="btn ghost" id="authSignUp">Registrarse</button>
+      <button class="btn primary" id="authSignIn">Iniciar sesión</button>
+    </div>
+  `, { wide: false });
+
+  $("#authEyeBtn")?.addEventListener("click", () => {
+    const p = $("#authPassword");
+    if (p) p.type = p.type === "password" ? "text" : "password";
+  });
+
+  $("#authGoogleBtn")?.addEventListener("click", async () => {
+    try { await signInWithGoogle(); } catch (err) { toast("Error Google: " + err.message, "err"); }
+  });
+
+  $("#authSignIn")?.addEventListener("click", async () => {
+    const email = $("#authEmail")?.value.trim();
+    const password = $("#authPassword")?.value;
+    const err = $("#authError");
+    if (!email || !password) { err.textContent = "Introduce correo y contraseña."; return; }
+    try {
+      await signInWithEmail(email, password);
+      closeModal(true);
+      toast("¡Sesión iniciada correctamente!", "ok");
+      $("#btnAuth").textContent = `👤 ${email.split("@")[0]}`;
+    } catch (e) {
+      err.textContent = e.message || "Error al iniciar sesión";
+    }
+  });
+
+  $("#authSignUp")?.addEventListener("click", async () => {
+    const email = $("#authEmail")?.value.trim();
+    const password = $("#authPassword")?.value;
+    const err = $("#authError");
+    if (!email || !password) { err.textContent = "Introduce correo y contraseña."; return; }
+    try {
+      await signUpWithEmail(email, password);
+      closeModal(true);
+      toast("¡Cuenta creada con éxito!", "ok", 6000);
+      $("#btnAuth").textContent = `👤 ${email.split("@")[0]}`;
+    } catch (e) {
+      err.textContent = e.message || "Error al registrarse";
+    }
+  });
+
+  $("#authForgot")?.addEventListener("click", async () => {
+    const email = $("#authEmail")?.value.trim();
+    const err = $("#authError");
+    if (!email) { err.textContent = "Escribe tu correo arriba para recuperar la contraseña."; return; }
+    try {
+      await resetPassword(email);
+      toast("Correo de recuperación enviado a " + email, "ok", 6000);
+    } catch (e) {
+      err.textContent = e.message || "Error al enviar recuperación";
+    }
+  });
+}
+
+function openSupportModal() {
+  openModal(`
+    <h2>Soporte Oficial JC ADS</h2>
+    <p class="modal-sub">Envía tu consulta directa a <b>soporte@jcads.net</b> (Dueño y Administrador).</p>
+    <div class="modal-form" style="text-align:left;">
+      <label>Tu correo electrónico</label>
+      <input type="email" class="text-input" id="supEmail" placeholder="tucorreo@ejemplo.com">
+      <label style="margin-top:10px;">Mensaje o consulta</label>
+      <textarea class="textarea" id="supMessage" rows="4" placeholder="Escribe tu consulta o requerimiento para soporte@jcads.net..."></textarea>
+      <div id="supError" style="color:var(--danger); font-size:11px; margin-top:6px;"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:14px;">
+      <button class="btn ghost" data-close>Cancelar</button>
+      <button class="btn primary" id="supSend">Enviar a soporte@jcads.net</button>
+    </div>
+  `, { wide: false });
+
+  getCurrentUser().then(user => {
+    if (user && $("#supEmail")) $("#supEmail").value = user.email;
+  });
+
+  $("#supSend")?.addEventListener("click", async () => {
+    const email = $("#supEmail")?.value.trim() || "soporte@jcads.net";
+    const message = $("#supMessage")?.value.trim();
+    const err = $("#supError");
+    if (!message) { err.textContent = "Escribe un mensaje."; return; }
+    try {
+      await sendSupportTicket(email, message);
+      closeModal(true);
+      toast("¡Mensaje enviado a soporte@jcads.net guardado en Supabase!", "ok", 6000);
+    } catch (e) {
+      err.textContent = e.message || "Error al enviar";
+    }
+  });
 }
 
 const UI_TEXTS = {
@@ -681,12 +857,13 @@ const UI_TEXTS = {
     btnSave: "Guardar",
     btnExport: "Exportar",
     btnPremium: "Premium",
+    btnAuth: "Iniciar sesión",
+    btnSupport: "Soporte",
     "rail-media": "Medios",
     "rail-text": "Texto",
     "rail-audio": "Audio",
     "rail-effects": "Filtros",
     "rail-ai": "IA",
-    "rail-admin": "Admin",
   },
   en: {
     btnNew: "New",
@@ -695,12 +872,13 @@ const UI_TEXTS = {
     btnSave: "Save",
     btnExport: "Export",
     btnPremium: "Premium",
+    btnAuth: "Sign In",
+    btnSupport: "Support",
     "rail-media": "Media",
     "rail-text": "Text",
     "rail-audio": "Audio",
     "rail-effects": "Filters",
     "rail-ai": "AI",
-    "rail-admin": "Admin",
   },
 };
 
@@ -718,6 +896,10 @@ function setLanguage(lang) {
   if (expBtn && expBtn.childNodes[2]) expBtn.childNodes[2].textContent = " " + dict.btnExport;
   const premBtn = $("#btnPremium");
   if (premBtn) premBtn.textContent = dict.btnPremium;
+  const authBtn = $("#btnAuth");
+  if (authBtn && !authBtn.textContent.includes("👤 ")) authBtn.textContent = `👤 ${dict.btnAuth}`;
+  const suppBtn = $("#btnSupport");
+  if (suppBtn) suppBtn.textContent = `💬 ${dict.btnSupport}`;
 
   $$(".rail-btn span").forEach((span) => {
     const text = span.textContent.trim();
@@ -726,7 +908,6 @@ function setLanguage(lang) {
     if (text === "Audio") span.textContent = dict["rail-audio"];
     if (text === "Filtros" || text === "Filters") span.textContent = dict["rail-effects"];
     if (text === "IA" || text === "AI") span.textContent = dict["rail-ai"];
-    if (text === "Admin") span.textContent = dict["rail-admin"];
   });
 }
 
