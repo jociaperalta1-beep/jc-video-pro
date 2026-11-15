@@ -7,7 +7,7 @@ import {
   isPremium, escapeHtml, fmtTime, bytes, clamp, DEFAULT_FILTER, ANIMATIONS,
   isProAnimation,
 } from "./core.js";
-import { addMediaClip, removeMedia, mediaLabel } from "./media.js";
+import { addMediaClip, removeMedia, mediaLabel, importAudioBlob } from "./media.js";
 import { generateAIVideo } from "./ai.js";
 import { searchITunes, addTrackToLibrary, downloadTrack } from "./music.js";
 import {
@@ -195,16 +195,42 @@ function audioPanelHTML() {
     <div class="import-row">
       <button class="btn primary" data-action="import">Importar música o voz</button>
     </div>
-    <div class="side-label">Pistas de audio · ${audioList.length}</div>
+
+    <div class="ai-card" style="margin-top:14px">
+      <h3>Buscador de Música (iTunes API)</h3>
+      <p>Busca canciones reales con previews de 30s libres para tus videos.</p>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <input type="text" class="input" id="itunesSearchInput" placeholder="Artista o canción..." style="flex:1">
+        <button class="btn primary" data-action="itunes-search">Buscar</button>
+      </div>
+      <div id="itunesResults" style="margin-top:10px; display:flex; flex-direction:column; gap:6px; max-height:180px; overflow-y:auto;"></div>
+    </div>
+
+    <div class="ai-card" style="margin-top:14px">
+      <h3>Estudio DJ / Instrumentales</h3>
+      <p>Genera bases instrumentales instantáneas con sintetizador Web Audio.</p>
+      <div class="field-row" style="margin-top:8px">
+        <label>Estilo</label>
+        <select class="select" id="djGenre">
+          <option value="electronica">Electrónica / Dance</option>
+          <option value="reggaeton">Reggaetón / Urbano</option>
+          <option value="lofi">Lo-Fi Chill</option>
+          <option value="cinematico">Cinemático Épico</option>
+        </select>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>BPM (<span id="bpmVal">120</span>)</label>
+        <input type="range" class="range" id="djBpm" min="80" max="160" step="4" value="120">
+      </div>
+      <button class="btn accent wide" data-action="dj-generate" style="margin-top:8px">Generar Instrumental DJ</button>
+    </div>
+
+    <div class="side-label" style="margin-top:16px">Pistas de audio · ${audioList.length}</div>
     ${audioList.length ? `<div class="media-grid">${audioList.map(mediaCardHTML).join("")}</div>` : `
       <div class="empty-note">
         <strong>Sin audio todavía</strong>
-        Importa tus propias canciones, grabaciones de voz o efectos de sonido.
+        Importa tus propias canciones o genera instrumentales arriba.
       </div>`}
-    <p class="mini-help">Añade tu música al panel y ajusta el volumen por clip en Propiedades. Usa solo audio con derechos de uso.</p>
-    <div class="honest-note">
-      La grabación de voz desde el micrófono y la biblioteca de música libre todavía no están integradas en esta versión. Se planifican para una siguiente fase.
-    </div>
   `;
 }
 
@@ -269,6 +295,25 @@ function aiPanelHTML() {
         Usos de IA hoy: <strong>${quota.unlimited ? "Ilimitados (Premium)" : `${quota.remaining} de ${quota.limit} disponibles`}</strong>
       </div>
       <button class="btn primary wide" data-action="ai-create" style="margin-top:10px">Generar Video con IA</button>
+    </div>
+
+    <div class="ai-card" style="margin-top:16px">
+      <h3>Creador de Música con IA</h3>
+      <p>Genera melodías y beats automáticos sin copyright según el género y BPM.</p>
+      <div class="field-row" style="margin-top:8px">
+        <label>Género</label>
+        <select class="select" id="aiMusicGenre">
+          <option value="electronica">Electrónica</option>
+          <option value="reggaeton">Urbano / Reggaetón</option>
+          <option value="lofi">Lo-Fi</option>
+          <option value="cinematico">Cinemático</option>
+        </select>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>BPM</label>
+        <input type="range" class="range" id="aiMusicBpm" min="80" max="150" step="5" value="120">
+      </div>
+      <button class="btn primary wide" data-action="ai-music-create" style="margin-top:8px">Generar Música con IA</button>
     </div>
 
     <div class="ai-card" style="margin-top:16px">
@@ -349,6 +394,21 @@ async function onPanelClick(e) {
 
   if (action === "ai-reward") {
     handleAIReward();
+    return;
+  }
+
+  if (action === "itunes-search") {
+    handleItunesSearch();
+    return;
+  }
+
+  if (action === "itunes-add") {
+    handleItunesAdd(actionEl.dataset.preview, actionEl.dataset.title, actionEl.dataset.artist, actionEl.dataset.artwork);
+    return;
+  }
+
+  if (action === "dj-generate" || action === "ai-music-create") {
+    handleGenerateMusic(action === "ai-music-create" ? "ai" : "dj");
     return;
   }
 
@@ -595,4 +655,161 @@ function handleAIReward() {
   grantExtraAIUses(2);
   toast("¡Has ganado 30 minutos de acceso PRO y +2 usos de IA!", "ok");
   renderPanel();
+}
+
+async function handleItunesSearch() {
+  const term = $("#itunesSearchInput")?.value.trim();
+  const resBox = $("#itunesResults");
+  if (!resBox) return;
+  if (!term) {
+    toast("Escribe el nombre de un artista o canción.", "err");
+    return;
+  }
+  resBox.innerHTML = `<div style="font-size:12px; opacity:0.7; padding:4px;">Buscando en iTunes…</div>`;
+  try {
+    const tracks = await searchITunes(term, 8);
+    if (!tracks.length) {
+      resBox.innerHTML = `<div style="font-size:12px; opacity:0.7; padding:4px;">No se encontraron canciones.</div>`;
+      return;
+    }
+    resBox.innerHTML = tracks.map((t) => `
+      <div style="display:flex; align-items:center; gap:8px; background:rgba(255,255,255,0.04); padding:6px; border-radius:6px;">
+        <img src="${t.artwork || ""}" style="width:36px; height:36px; border-radius:4px; object-fit:cover;" onerror="this.style.display='none'">
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(t.title)}</div>
+          <div style="font-size:11px; opacity:0.7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(t.artist)}</div>
+        </div>
+        <button class="btn tiny primary" data-action="itunes-add" data-preview="${escapeHtml(t.previewUrl)}" data-title="${escapeHtml(t.title)}" data-artist="${escapeHtml(t.artist)}" data-artwork="${escapeHtml(t.artwork)}">Añadir</button>
+      </div>
+    `).join("");
+  } catch (err) {
+    console.error("[JCVP] iTunes", err);
+    resBox.innerHTML = `<div style="font-size:12px; color:#f87171; padding:4px;">Error en la búsqueda.</div>`;
+  }
+}
+
+async function handleItunesAdd(previewUrl, title, artist, artwork) {
+  if (!previewUrl) return;
+  try {
+    const track = { previewUrl, title, artist, artwork, duration: 30 };
+    await addTrackToLibrary(track);
+    toast("Pista añadida a la biblioteca de audio.", "ok");
+    renderPanel();
+  } catch (err) {
+    console.error("[JCVP] add track", err);
+    toast("No se pudo añadir la pista.", "err");
+  }
+}
+
+async function handleGenerateMusic(mode) {
+  const genre = mode === "ai" ? ($("#aiMusicGenre")?.value || "electronica") : ($("#djGenre")?.value || "electronica");
+  const bpm = mode === "ai" ? (Number($("#aiMusicBpm")?.value) || 120) : (Number($("#djBpm")?.value) || 120);
+
+  openModal(`
+    <h2>Generando instrumental con IA…</h2>
+    <p class="modal-sub">Sintetizando base instrumental (${genre.toUpperCase()} a ${bpm} BPM)…</p>
+    <div style="margin:20px 0; background:rgba(255,255,255,0.08); border-radius:8px; height:10px; overflow:hidden;">
+      <div style="background:linear-gradient(90deg, #a855f7, #38bdf8); width:100%; height:100%;"></div>
+    </div>
+  `, { locked: true });
+
+  try {
+    await generateAIMusic({ genre, bpm });
+    closeModal(true);
+    toast("¡Instrumental generada y añadida a la biblioteca!", "ok");
+    renderPanel();
+  } catch (err) {
+    closeModal(true);
+    console.error("[JCVP] AI music", err);
+    toast("Error al generar instrumental: " + (err.message || err), "err");
+  }
+}
+
+async function generateAIMusic({ genre = "electronica", bpm = 120 } = {}) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const sampleRate = ctx.sampleRate;
+  const durationSec = 12;
+  const numFrames = sampleRate * durationSec;
+  const buffer = ctx.createBuffer(2, numFrames, sampleRate);
+  const left = buffer.getChannelData(0);
+  const right = buffer.getChannelData(1);
+
+  const beatInterval = 60 / bpm;
+
+  for (let i = 0; i < numFrames; i++) {
+    const t = i / sampleRate;
+    const beat = Math.floor(t / beatInterval);
+    const subBeat = (t % beatInterval) / beatInterval;
+    
+    let sample = 0;
+    if (genre === "electronica" || genre === "reggaeton") {
+      if (subBeat < 0.15 && (beat % 2 === 0 || (genre === "reggaeton" && (subBeat < 0.1 || (subBeat > 0.5 && subBeat < 0.6))))) {
+        const env = Math.max(0, 1 - subBeat * 8);
+        sample += Math.sin(t * 130 * Math.PI) * env * 0.75;
+      }
+      const freq = 220 * (1 + Math.sin(beat * 0.5) * 0.4);
+      sample += Math.sin(t * freq * 2 * Math.PI) * 0.14 * Math.sin(t * 4 * Math.PI);
+    } else if (genre === "lofi") {
+      sample += (Math.random() * 2 - 1) * 0.04;
+      const chordFreq = 174.61;
+      sample += Math.sin(t * chordFreq * 2 * Math.PI) * 0.1 * Math.sin(t * 0.5 * Math.PI);
+    } else {
+      sample += Math.sin(t * 110 * 2 * Math.PI) * 0.22 * Math.sin(t * 0.2 * Math.PI);
+    }
+
+    left[i] = clamp(sample, -1, 1);
+    right[i] = clamp(sample, -1, 1);
+  }
+
+  const wavBlob = bufferToWav(buffer, numFrames);
+  const media = await importAudioBlob(wavBlob, {
+    name: `Música IA · ${genre.toUpperCase()} (${bpm} BPM)`,
+    fileName: `ai_music_${genre}_${Date.now()}.wav`,
+    source: "IA",
+    duration: durationSec,
+  });
+  return media;
+}
+
+function bufferToWav(buffer, numFrames) {
+  const numOfChan = buffer.numberOfChannels;
+  const length = numFrames * numOfChan * 2 + 44;
+  const out = new DataView(new ArrayBuffer(length));
+  let sampleRate = buffer.sampleRate;
+  let offset = 0;
+  let pos = 0;
+
+  function writeString(str) {
+    for (let i = 0; i < str.length; i++) {
+      out.setUint8(pos++, str.charCodeAt(i));
+    }
+  }
+
+  writeString("RIFF");
+  out.setUint32(pos, length - 8, true); pos += 4;
+  writeString("WAVE");
+  writeString("fmt ");
+  out.setUint32(pos, 16, true); pos += 4;
+  out.setUint16(pos, 1, true); pos += 2;
+  out.setUint16(pos, numOfChan, true); pos += 2;
+  out.setUint32(pos, sampleRate, true); pos += 4;
+  out.setUint32(pos, sampleRate * numOfChan * 2, true); pos += 4;
+  out.setUint16(pos, numOfChan * 2, true); pos += 2;
+  out.setUint16(pos, 16, true); pos += 2;
+  writeString("data");
+  out.setUint32(pos, length - pos - 4, true); pos += 4;
+
+  const channels = [];
+  for (let i = 0; i < buffer.numberOfChannels; i++) channels.push(buffer.getChannelData(i));
+
+  while (offset < numFrames) {
+    for (let i = 0; i < numOfChan; i++) {
+      let sample = Math.max(-1, Math.min(1, channels[i][offset]));
+      sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+      out.setInt16(pos, sample, true);
+      pos += 2;
+    }
+    offset++;
+  }
+  return new Blob([out.buffer], { type: "audio/wav" });
 }

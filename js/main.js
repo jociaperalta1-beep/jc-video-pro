@@ -17,7 +17,7 @@ import { Renderer } from "./renderer.js";
 import { initTimeline } from "./timeline.js";
 import { initInspector } from "./inspector.js";
 import { initPanels } from "./panels.js";
-import { initPremium, openPremiumModal, updateRibbon } from "./premium.js";
+import { formatVideoEmbedUrl, getMonetization } from "./monetization.js";
 import { initExporter } from "./exporter.js";
 import { bindModal, openModal, closeModal, toast, confirmAction } from "./ui.js";
 import { escapeHtml } from "./core.js";
@@ -130,6 +130,7 @@ function bindUI() {
   $("#btnSave")?.addEventListener("click", () => saveNow(true));
   $("#btnNew")?.addEventListener("click", openNewProjectModal);
   $("#btnOpen")?.addEventListener("click", openProjectsModal);
+  $("#btnTutorial")?.addEventListener("click", openTutorialModal);
   $("#btnAdmin")?.addEventListener("click", () => {
     window.open("admin.html", "_blank", "noopener");
   });
@@ -140,7 +141,8 @@ function bindUI() {
     const current = btn.textContent.includes("ES") ? "ES" : "EN";
     const next = current === "ES" ? "EN" : "ES";
     btn.textContent = `🌐 ${next} ▾`;
-    toast(next === "EN" ? "Language switched to English (Demo UI). Full multi-language coming soon." : "Idioma cambiado a Español.", "ok");
+    setLanguage(next.toLowerCase());
+    toast(next === "EN" ? "Language switched to English." : "Idioma cambiado a Español.", "ok");
   });
   $("#btnMoreMobile")?.addEventListener("click", openMobileMenu);
 
@@ -208,7 +210,9 @@ function bindUI() {
   });
   on("time", () => updateTimeReadout());
   on("selection", (sel) => {
-    if (sel && window.innerWidth <= 1220) $("#app")?.classList.add("show-inspector");
+    if (sel) {
+      $("#app")?.classList.add("show-inspector");
+    }
   });
 
   document.addEventListener("keydown", onKeyDown);
@@ -638,6 +642,92 @@ function firstRun() {
       <button class="btn primary" data-close>Empezar a editar</button>
     </div>
   `, { wide: true });
+}
+
+/* ---------------- Tutorial e Idioma ---------------- */
+function openTutorialModal() {
+  const config = getMonetization();
+  const embed = formatVideoEmbedUrl(config.tutorialVideoUrl || "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+
+  openModal(`
+    <h2>Tutorial y Guía de Uso</h2>
+    <p class="modal-sub">Aprende a editar videos profesionales, usar IA y exportar en minutos.</p>
+    
+    ${embed.type !== "none" ? `
+      <div style="position:relative; width:100%; padding-bottom:56.25%; background:#000; border-radius:8px; overflow:hidden; margin-bottom:16px;">
+        <iframe src="${embed.src}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen></iframe>
+      </div>
+    ` : ""}
+
+    <div style="display:flex; flex-direction:column; gap:10px; text-align:left; font-size:14px; max-height:260px; overflow-y:auto; padding-right:4px;">
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 1: Importa tus medios</b><br>Sube tus videos, fotos o música desde el panel de Medios o arrastrándolos al lienzo.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 2: Organiza la línea de tiempo</b><br>Arrastra clips a las pistas de video, superposición o audio. Recorta, divide o duplica con facilidad.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 3: Añade Textos y Animaciones CapCut</b><br>Elige un estilo de texto e hiper-anima con efectos de neón, pulso, máquina de escribir o fundido.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 4: Crea con Inteligencia Artificial</b><br>Usa el generador de video y música por IA sin complicaciones y añade voz en off sintética.</div>
+      <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;"><b>Paso 5: Exporta y comparte</b><br>Exporta tu creación en formato vertical o horizontal directamente desde el botón Exportar.</div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn primary" data-close>Entendido</button>
+    </div>
+  `, { wide: true });
+}
+
+const UI_TEXTS = {
+  es: {
+    btnNew: "Nuevo",
+    btnOpen: "Abrir",
+    btnTutorial: "Tutorial",
+    btnSave: "Guardar",
+    btnExport: "Exportar",
+    btnPremium: "Premium",
+    "rail-media": "Medios",
+    "rail-text": "Texto",
+    "rail-audio": "Audio",
+    "rail-effects": "Filtros",
+    "rail-ai": "IA",
+    "rail-admin": "Admin",
+  },
+  en: {
+    btnNew: "New",
+    btnOpen: "Open",
+    btnTutorial: "Tutorial",
+    btnSave: "Save",
+    btnExport: "Export",
+    btnPremium: "Premium",
+    "rail-media": "Media",
+    "rail-text": "Text",
+    "rail-audio": "Audio",
+    "rail-effects": "Filters",
+    "rail-ai": "AI",
+    "rail-admin": "Admin",
+  },
+};
+
+function setLanguage(lang) {
+  const dict = UI_TEXTS[lang] || UI_TEXTS.es;
+  const newLbl = $("#btnNew span.btn-label");
+  if (newLbl) newLbl.textContent = dict.btnNew;
+  const openLbl = $("#btnOpen span.btn-label");
+  if (openLbl) openLbl.textContent = dict.btnOpen;
+  const tutLbl = $("#btnTutorial span.btn-label");
+  if (tutLbl) tutLbl.textContent = dict.btnTutorial;
+  const saveBtn = $("#btnSave");
+  if (saveBtn) saveBtn.textContent = dict.btnSave;
+  const expBtn = $("#btnExport");
+  if (expBtn && expBtn.childNodes[2]) expBtn.childNodes[2].textContent = " " + dict.btnExport;
+  const premBtn = $("#btnPremium");
+  if (premBtn) premBtn.textContent = dict.btnPremium;
+
+  $$(".rail-btn span").forEach((span) => {
+    const text = span.textContent.trim();
+    if (text === "Medios" || text === "Media") span.textContent = dict["rail-media"];
+    if (text === "Texto" || text === "Text") span.textContent = dict["rail-text"];
+    if (text === "Audio") span.textContent = dict["rail-audio"];
+    if (text === "Filtros" || text === "Filters") span.textContent = dict["rail-effects"];
+    if (text === "IA" || text === "AI") span.textContent = dict["rail-ai"];
+    if (text === "Admin") span.textContent = dict["rail-admin"];
+  });
 }
 
 /* ---------------- Servicio ---------------- */
