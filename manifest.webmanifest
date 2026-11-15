@@ -1,0 +1,52 @@
+{
+  "name": "JC VIDEO PRO — Editor de video",
+  "short_name": "JC Video Pro",
+  "description": "Editor de video profesional para Android y Web. Crea contenido para TikTok, YouTube, Instagram y más.",
+  "id": "jc-video-pro",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#06040e",
+  "theme_color": "#0a0718",
+  "lang": "es",
+  "categories": ["video", "productivity", "photo"],
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nuevo proyecto",
+      "url": "./index.html",
+      "description": "Abrir el editor de JC VIDEO PRO"
+    },
+    {
+      "name": "Panel de administración",
+      "url": "./admin.html",
+      "description": "Gestionar planes y estadísticas"
+    }
+  ]
+}

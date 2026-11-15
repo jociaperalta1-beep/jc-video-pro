@@ -1,0 +1,653 @@
+/* ============================================================
+   JC VIDEO PRO — Arranque y coordinación de la aplicación
+   ============================================================ */
+
+import {
+  $, $$, store, on, emit, createProject, normalizeProject, ASPECTS, allClips,
+  projectDuration, fmtTime, snapshot, splitClipAt, removeClip, duplicateClip,
+  createTextClip, addClip, uid, getLastProjectId, setLastProjectId, canUndo,
+  canRedo, undo, redo,
+} from "./core.js";
+import {
+  saveProjectRecord, getProjectRecord, listProjects, deleteProjectRecord,
+  requestPersistentStorage,
+} from "./storage.js";
+import { importFiles, rehydrateMedia, addMediaClip, freeStart } from "./media.js";
+import { Renderer } from "./renderer.js";
+import { initTimeline } from "./timeline.js";
+import { initInspector } from "./inspector.js";
+import { initPanels } from "./panels.js";
+import { initPremium, openPremiumModal, updateRibbon } from "./premium.js";
+import { initExporter } from "./exporter.js";
+import { bindModal, openModal, closeModal, toast, confirmAction } from "./ui.js";
+import { escapeHtml } from "./core.js";
+
+let renderer = null;
+let saveTimer = null;
+
+/* ---------------- Arranque ---------------- */
+async function boot() {
+  store.project = createProject({ aspect: "9:16" });
+  renderer = new Renderer($("#preview"));
+  renderer.setProject(store.project);
+
+  bindModal();
+  initTimeline(renderer);
+  initInspector(renderer);
+  initPanels();
+  initPremium();
+  initExporter(renderer);
+  bindUI();
+  bindDragAndDrop();
+  fitPreview();
+  new ResizeObserver(() => fitPreview()).observe($("#stageCanvasWrap"));
+  window.addEventListener("resize", fitPreview);
+
+  on("open-premium", openPremiumModal);
+  on("notify", ({ msg, type }) => toast(msg, type || ""));
+  on("playing", (playing) => $("#btnPlay")?.classList.toggle("playing", playing));
+  on("export-end", () => { updateEmptyState(); updateTimeReadout(); });
+  on("history", updateHistoryButtons);
+
+  try { await rehydrateMedia(); } catch (err) { console.warn("[JCVP] medios", err); }
+
+  let loaded = false;
+  const lastId = getLastProjectId();
+  if (lastId) {
+    try {
+      const rec = await getProjectRecord(lastId);
+      if (rec) { loadProject(rec); loaded = true; }
+    } catch (err) { console.warn("[JCVP] proyecto", err); }
+  }
+  if (!loaded) {
+    loadProject(store.project);
+    await saveProjectRecord(store.project);
+    setLastProjectId(store.project.id);
+    updateSaveStateSaved();
+    firstRun();
+  }
+
+  requestPersistentStorage();
+  registerServiceWorker();
+  updateHistoryButtons();
+}
+
+/* ---------------- Carga de proyecto ---------------- */
+function loadProject(raw) {
+  renderer.pause();
+  store.project = normalizeProject(raw);
+  store.selection = null;
+  store.time = 0;
+  store.playing = false;
+  store.dirty = false;
+
+  setLastProjectId(store.project.id);
+  const nameInput = $("#projectName");
+  if (nameInput) nameInput.value = store.project.name || "Mi proyecto";
+  const fmt = $("#formatSelect");
+  if (fmt) fmt.value = store.project.aspect || "9:16";
+
+  renderer.setProject(store.project);
+  fitPreview();
+  emit("project");
+  emit("selection", null);
+  emit("time", 0);
+  updateFormatBadge();
+  updateEmptyState();
+  updateTimeReadout();
+  updateHistoryButtons();
+  updateSaveStateSaved();
+  checkMissingMedia();
+}
+
+function checkMissingMedia() {
+  const missing = new Set();
+  for (const { clip } of allClips()) {
+    if (clip.mediaId && !store.media.has(clip.mediaId)) missing.add(clip.mediaId);
+  }
+  if (missing.size) {
+    toast(`${missing.size} medio(s) del proyecto no están en esta biblioteca. Vuelve a importar los archivos originales para verlos.`, "err", 6500);
+  }
+}
+
+/* ---------------- Interfaz ---------------- */
+function bindUI() {
+  $("#btnPlay")?.addEventListener("click", async () => {
+    if (store.exporting) return;
+    if (projectDuration() <= 0) {
+      toast("Añade al menos un clip a la línea de tiempo.", "err");
+      return;
+    }
+    await renderer.toggle();
+    updateTimeReadout();
+  });
+
+  $("#btnStop")?.addEventListener("click", () => {
+    renderer.pause();
+    renderer.seek(0);
+  });
+
+  $("#btnSave")?.addEventListener("click", () => saveNow(true));
+  $("#btnNew")?.addEventListener("click", openNewProjectModal);
+  $("#btnOpen")?.addEventListener("click", openProjectsModal);
+  $("#btnAdmin")?.addEventListener("click", () => {
+    window.open("admin.html", "_blank", "noopener");
+  });
+  $("#btnUndo")?.addEventListener("click", () => { undo(); emit("time", store.time); });
+  $("#btnRedo")?.addEventListener("click", () => { redo(); emit("time", store.time); });
+  $("#btnLang")?.addEventListener("click", () => {
+    const btn = $("#btnLang");
+    const current = btn.textContent.includes("ES") ? "ES" : "EN";
+    const next = current === "ES" ? "EN" : "ES";
+    btn.textContent = `🌐 ${next} ▾`;
+    toast(next === "EN" ? "Language switched to English (Demo UI). Full multi-language coming soon." : "Idioma cambiado a Español.", "ok");
+  });
+  $("#btnMoreMobile")?.addEventListener("click", openMobileMenu);
+
+  $("#btnSplit")?.addEventListener("click", doSplit);
+  $("#btnDeleteClip")?.addEventListener("click", doDelete);
+  $("#btnDuplicate")?.addEventListener("click", doDuplicate);
+  $("#btnAddText")?.addEventListener("click", doAddText);
+
+  $("#btnFit")?.addEventListener("click", fitPreview);
+  $("#btnInspector")?.addEventListener("click", () => $("#app")?.classList.add("show-inspector"));
+  $("#closeInspector")?.addEventListener("click", () => $("#app")?.classList.remove("show-inspector"));
+  $("#closePanel")?.addEventListener("click", () => $("#app")?.classList.remove("show-panel"));
+  $("#btnPanelMobile")?.addEventListener("click", () => {
+    $("#app")?.classList.add("show-panel");
+  });
+
+  $("#formatSelect")?.addEventListener("change", (e) => {
+    if (!store.project) return;
+    snapshot("Cambiar formato");
+    const aspect = ASPECTS[e.target.value] || ASPECTS["9:16"];
+    store.project.aspect = aspect.id;
+    store.project.width = aspect.width;
+    store.project.height = aspect.height;
+    renderer.setProject(store.project);
+    fitPreview();
+    updateFormatBadge();
+    emit("project");
+    emit("change");
+  });
+
+  $("#projectName")?.addEventListener("input", (e) => {
+    if (!store.project) return;
+    store.project.name = e.target.value;
+    store.dirty = true;
+    scheduleSave();
+  });
+  $("#projectName")?.addEventListener("blur", () => {
+    if (!store.project) return;
+    const clean = $("#projectName").value.trim() || "Mi proyecto";
+    $("#projectName").value = clean;
+    store.project.name = clean;
+  });
+
+  $("#fileMedia")?.addEventListener("change", (e) => {
+    handleFiles(e.target.files);
+    e.target.value = "";
+  });
+  $("#fileProject")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) importProjectFile(file);
+    e.target.value = "";
+  });
+  $("#btnImportEmpty")?.addEventListener("click", () => $("#fileMedia")?.click());
+  $("#stageDrop")?.addEventListener("click", (e) => {
+    if (e.target.closest("#btnImportEmpty")) return;
+    if (e.target === e.currentTarget) $("#fileMedia")?.click();
+  });
+
+  on("change", () => { scheduleSave(); emit("project"); });
+  on("project", () => {
+    updateFormatBadge();
+    updateEmptyState();
+    updateTimeReadout();
+    updateHistoryButtons();
+  });
+  on("time", () => updateTimeReadout());
+  on("selection", (sel) => {
+    if (sel && window.innerWidth <= 1220) $("#app")?.classList.add("show-inspector");
+  });
+
+  document.addEventListener("keydown", onKeyDown);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && store.dirty) saveNow(false);
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (store.dirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
+}
+
+function onKeyDown(e) {
+  const target = e.target;
+  const typing = target.matches?.("input, textarea, select") || target.isContentEditable;
+  if (typing) return;
+  const mod = e.ctrlKey || e.metaKey;
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    $("#btnPlay")?.click();
+  } else if (mod && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+    emit("time", store.time);
+  } else if (mod && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    saveNow(true);
+  } else if (mod && e.key.toLowerCase() === "e") {
+    e.preventDefault();
+    $("#btnExport")?.click();
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    if (store.selection) {
+      e.preventDefault();
+      doDelete();
+    }
+  } else if (e.key.toLowerCase() === "s" && !mod) {
+    e.preventDefault();
+    doSplit();
+  } else if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    renderer.pause();
+    renderer.seek(store.time - (e.shiftKey ? 5 : 1));
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    renderer.pause();
+    renderer.seek(store.time + (e.shiftKey ? 5 : 1));
+  }
+}
+
+/* ---------------- Acciones del editor ---------------- */
+function doSplit() {
+  if (!store.project) return;
+  snapshot("Dividir clip");
+  if (!splitClipAt(store.time)) toast("Coloca el cursor dentro de un clip para dividirlo.", "err");
+}
+
+function doDelete() {
+  if (!store.selection) { toast("Selecciona un clip primero.", "err"); return; }
+  snapshot("Eliminar clip");
+  removeClip(store.selection.clipId);
+  toast("Clip eliminado.", "");
+}
+
+function doDuplicate() {
+  if (!store.selection) { toast("Selecciona un clip primero.", "err"); return; }
+  snapshot("Duplicar clip");
+  duplicateClip(store.selection.clipId);
+}
+
+function doAddText() {
+  if (!store.project) return;
+  snapshot("Añadir texto");
+  const clip = createTextClip({ content: "Tu texto aquí", start: store.time, duration: 4 });
+  addClip("t-text", clip);
+  store.selection = { clipId: clip.id, trackId: "t-text" };
+  emit("selection", store.selection);
+  emit("project");
+  emit("change");
+  toast("Texto añadido en el cursor.", "ok");
+}
+
+/* ---------------- Medios ---------------- */
+async function handleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  updateSaveState("saving", "Importando…");
+  const errors = [];
+  let imported = [];
+  try {
+    imported = await importFiles(files, {
+      onProgress: ({ index, total }) => updateSaveState("saving", `Importando ${index}/${total}…`),
+      onError: (file, msg) => errors.push(`${file.name}: ${msg}`),
+    });
+  } catch (err) {
+    console.error(err);
+    errors.push(err.message || "Error inesperado");
+  }
+
+  if (imported.length) {
+    toast(`${imported.length} archivo(s) importado(s) a la biblioteca.`, "ok");
+    if (allClips().length === 0) {
+      const media = store.media.get(imported[0]);
+      if (media) {
+        const trackId = media.type === "audio" ? "t-audio" : "t-video";
+        addMediaClip(media.id, trackId, { start: 0 });
+        emit("project");
+      }
+    }
+  }
+  if (errors.length) toast("No se pudo importar: " + errors.join(" · "), "err", 7000);
+  updateSaveState(store.dirty ? "saving" : "saved", store.dirty ? "Sin guardar" : "Listo");
+  updateEmptyState();
+}
+
+function bindDragAndDrop() {
+  const wrap = $("#stageCanvasWrap");
+  const drop = $("#stageDrop");
+  if (!wrap || !drop) return;
+
+  const show = () => drop.classList.add("visible");
+  const hide = () => drop.classList.remove("visible");
+
+  wrap.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    if (store.exporting) return;
+    show();
+    wrap.classList.add("dragover");
+  });
+  wrap.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  wrap.addEventListener("dragleave", (e) => {
+    if (!wrap.contains(e.relatedTarget)) {
+      wrap.classList.remove("dragover");
+      updateEmptyState();
+    }
+  });
+  wrap.addEventListener("drop", (e) => {
+    e.preventDefault();
+    wrap.classList.remove("dragover");
+    updateEmptyState();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length) handleFiles(files);
+  });
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("dragover"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("dragover"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("dragover");
+    updateEmptyState();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length) handleFiles(files);
+  });
+
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => {
+    if (wrap.contains(e.target)) return;
+    e.preventDefault();
+    if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
+  });
+}
+
+/* ---------------- Proyectos ---------------- */
+async function saveNow(showToast) {
+  if (!store.project) return;
+  clearTimeout(saveTimer);
+  updateSaveState("saving", "Guardando…");
+  try {
+    const nameInput = $("#projectName");
+    if (nameInput) store.project.name = nameInput.value.trim() || "Mi proyecto";
+    await saveProjectRecord(store.project);
+    store.dirty = false;
+    setLastProjectId(store.project.id);
+    updateSaveStateSaved();
+    if (showToast) toast("Proyecto guardado en este navegador.", "ok");
+  } catch (err) {
+    console.error("[JCVP] guardar", err);
+    updateSaveState("", "Error al guardar");
+    toast("No se pudo guardar el proyecto: " + (err.message || err), "err");
+  }
+}
+
+function scheduleSave() {
+  if (!store.project) return;
+  updateSaveState("saving", "Guardando…");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveNow(false), 1200);
+}
+
+function updateSaveState(kind, text) {
+  const node = $("#saveState");
+  if (!node) return;
+  node.textContent = text;
+  node.className = "save-state" + (kind ? " " + kind : "");
+}
+
+function updateSaveStateSaved() {
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  updateSaveState("saved", "Guardado " + time);
+}
+
+function openMobileMenu() {
+  openModal(`
+    <h2>Menú</h2>
+    <p class="modal-sub">Acciones del proyecto y del editor.</p>
+    <div class="mobile-menu" id="mobileMenu">
+      <button class="btn ghost" data-mobile-action="new">Nuevo proyecto</button>
+      <button class="btn ghost" data-mobile-action="open">Abrir proyecto</button>
+      <button class="btn ghost" data-mobile-action="save">Guardar ahora</button>
+      <button class="btn ghost" data-mobile-action="undo">Deshacer</button>
+      <button class="btn ghost" data-mobile-action="redo">Rehacer</button>
+      <button class="btn ghost" data-mobile-action="premium">Planes Premium</button>
+      <button class="btn ghost" data-mobile-action="admin">Panel de administración</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" data-close>Cerrar</button>
+    </div>
+  `);
+
+  $("#mobileMenu")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-mobile-action]");
+    if (!btn) return;
+    const action = btn.dataset.mobileAction;
+    closeModal(true);
+    if (action === "new") openNewProjectModal();
+    else if (action === "open") openProjectsModal();
+    else if (action === "save") saveNow(true);
+    else if (action === "undo") { undo(); emit("time", store.time); }
+    else if (action === "redo") { redo(); emit("time", store.time); }
+    else if (action === "premium") openPremiumModal();
+    else if (action === "admin") window.open("admin.html", "_blank", "noopener");
+  });
+}
+
+async function openNewProjectModal() {
+  await saveNow(false);
+  openModal(`
+    <h2>Nuevo proyecto</h2>
+    <p class="modal-sub">Elige el nombre y el formato de salida. Tu biblioteca de medios se conserva.</p>
+    <div class="modal-form">
+      <label>Nombre del proyecto</label>
+      <input class="text-input" id="npName" value="Mi proyecto" maxlength="60">
+      <label>Formato</label>
+      <select class="select" id="npAspect">
+        ${Object.values(ASPECTS).map((a) => `<option value="${a.id}">${a.label} — ${a.hint}</option>`).join("")}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" data-close>Cancelar</button>
+      <button class="btn primary" id="npCreate">Crear proyecto</button>
+    </div>
+  `);
+
+  $("#npCreate")?.addEventListener("click", async () => {
+    const name = $("#npName")?.value.trim() || "Mi proyecto";
+    const aspect = $("#npAspect")?.value || "9:16";
+    const project = createProject({ name, aspect });
+    closeModal(true);
+    loadProject(project);
+    await saveProjectRecord(project);
+    setLastProjectId(project.id);
+    updateSaveStateSaved();
+    toast("Proyecto creado.", "ok");
+  });
+}
+
+async function openProjectsModal() {
+  await saveNow(false);
+  let projects = [];
+  try { projects = await listProjects(); } catch (err) { console.warn(err); }
+
+  const rows = projects.length
+    ? projects.map((p) => `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.03)">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name || "Proyecto")}</div>
+          <div style="font-size:10.5px;color:var(--muted)">
+            ${p.clipCount || 0} clip(s) · ${p.aspect || "9:16"} · ${new Date(p.updatedAt || p.savedAt || Date.now()).toLocaleDateString("es", { day: "2-digit", month: "short", year: "numeric" })}
+          </div>
+        </div>
+        <button class="btn tiny" data-open-project="${p.id}">Abrir</button>
+        <button class="btn tiny danger" data-delete-project="${p.id}">Eliminar</button>
+      </div>`).join("")
+    : `<div class="empty-note"><strong>No hay proyectos guardados</strong>Crea uno nuevo para empezar.</div>`;
+
+  openModal(`
+    <h2>Tus proyectos</h2>
+    <p class="modal-sub">Se guardan en este navegador. La sincronización entre dispositivos llegará en una fase posterior.</p>
+    <div id="projectsList">${rows}</div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btnImportJson">Importar .json</button>
+      <button class="btn ghost" id="btnExportJson">Exportar este proyecto (.json)</button>
+      <button class="btn primary" data-close>Cerrar</button>
+    </div>
+  `, { wide: true });
+
+  $("#projectsList")?.addEventListener("click", async (e) => {
+    const openBtn = e.target.closest("[data-open-project]");
+    if (openBtn) {
+      const rec = await getProjectRecord(openBtn.dataset.openProject);
+      if (!rec) { toast("No se encontró el proyecto.", "err"); return; }
+      loadProject(rec);
+      closeModal(true);
+      toast("Proyecto abierto.", "ok");
+      return;
+    }
+    const delBtn = e.target.closest("[data-delete-project]");
+    if (delBtn) {
+      const ok = await confirmAction({
+        title: "Eliminar proyecto",
+        message: "El proyecto se eliminará de este navegador. Los archivos de la biblioteca se conservan.",
+        confirmText: "Eliminar",
+        danger: true,
+      });
+      if (!ok) return;
+      await deleteProjectRecord(delBtn.dataset.deleteProject);
+      if (getLastProjectId() === delBtn.dataset.deleteProject) setLastProjectId("");
+      toast("Proyecto eliminado.", "ok");
+      openProjectsModal();
+    }
+  });
+
+  $("#btnImportJson")?.addEventListener("click", () => $("#fileProject")?.click());
+  $("#btnExportJson")?.addEventListener("click", () => {
+    const data = { app: "JC VIDEO PRO", type: "project", exportedAt: new Date().toISOString(), project: store.project };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `JC_VIDEO_PRO_${store.project.name.replace(/[^\w-]+/g, "_") || "proyecto"}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast("Proyecto exportado como JSON (sin archivos multimedia).", "ok");
+  });
+}
+
+async function importProjectFile(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const raw = data.project || data;
+    if (!raw || !Array.isArray(raw.tracks)) throw new Error("El archivo no parece un proyecto de JC VIDEO PRO.");
+    const project = normalizeProject(raw);
+    project.id = uid("prj");
+    project.name = (raw.name || "Proyecto") + " (importado)";
+    loadProject(project);
+    await saveProjectRecord(project);
+    setLastProjectId(project.id);
+    closeModal(true);
+    toast("Proyecto importado. Revisa si faltan medios por importar.", "ok");
+  } catch (err) {
+    toast("No se pudo importar el proyecto: " + (err.message || err), "err");
+  }
+}
+
+/* ---------------- Utilidades de vista ---------------- */
+function fitPreview() {
+  const wrap = $("#stageCanvasWrap");
+  const canvas = $("#preview");
+  if (!wrap || !canvas || !store.project) return;
+  const availW = Math.max(120, wrap.clientWidth - 52);
+  const availH = Math.max(120, wrap.clientHeight - 44);
+  const ar = store.project.width / store.project.height;
+  let w = availW;
+  let h = w / ar;
+  if (h > availH) { h = availH; w = h * ar; }
+  canvas.style.width = Math.round(w) + "px";
+  canvas.style.height = Math.round(h) + "px";
+}
+
+function updateFormatBadge() {
+  const badge = $("#stageFormat");
+  if (!badge || !store.project) return;
+  badge.textContent = `${store.project.width} × ${store.project.height} · ${store.project.aspect}`;
+}
+
+function updateEmptyState() {
+  const drop = $("#stageDrop");
+  if (!drop) return;
+  const empty = allClips().length === 0 && !store.exporting;
+  drop.classList.toggle("visible", empty);
+}
+
+function updateTimeReadout() {
+  const now = $("#timeNow");
+  const total = $("#timeTotal");
+  if (now) now.textContent = fmtTime(store.time);
+  if (total) total.textContent = fmtTime(projectDuration());
+}
+
+function updateHistoryButtons() {
+  const u = $("#btnUndo");
+  const r = $("#btnRedo");
+  if (u) u.disabled = !canUndo();
+  if (r) r.disabled = !canRedo();
+}
+
+function firstRun() {
+  let seen = null;
+  try { seen = localStorage.getItem("jcvp.tourSeen"); } catch { /* ignore */ }
+  if (seen) return;
+  try { localStorage.setItem("jcvp.tourSeen", "1"); } catch { /* ignore */ }
+  openModal(`
+    <h2>Bienvenido a JC VIDEO PRO</h2>
+    <p class="modal-sub">Tu editor de video real, sin servidores y sin instalar nada. Esta primera versión funciona en el navegador.</p>
+    <div class="ai-card">
+      <h3>1 · Importa</h3>
+      <p>Arrastra videos, fotos o música al área de vista previa. Se guardan en tu biblioteca local.</p>
+    </div>
+    <div class="ai-card">
+      <h3>2 · Edita</h3>
+      <p>Arrastra los clips en la línea de tiempo, recorta sus bordes, añade textos y filtros, y ajusta el volumen.</p>
+    </div>
+    <div class="ai-card">
+      <h3>3 · Exporta</h3>
+      <p>Pulsa Exportar para grabar un video real (WebM o MP4 según el navegador) y descargarlo a tu dispositivo.</p>
+    </div>
+    <p class="honest-note">
+      Lo que ves funciona de verdad. Las funciones de IA, la sincronización en la nube, los anuncios y los pagos
+      todavía no están integrados: se muestran marcados como pendientes, sin simular resultados.
+    </p>
+    <div class="modal-actions">
+      <button class="btn primary" data-close>Empezar a editar</button>
+    </div>
+  `, { wide: true });
+}
+
+/* ---------------- Servicio ---------------- */
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (!location.protocol.startsWith("http")) return;
+  navigator.serviceWorker.register("sw.js").catch((err) => console.warn("[JCVP] SW", err));
+}
+
+boot().catch((err) => {
+  console.error("[JCVP] arranque", err);
+  toast("Error al iniciar el editor. Revisa la consola.", "err", 8000);
+});

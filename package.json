@@ -1,0 +1,10 @@
+{
+  "name": "jc-video-pro",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JC VIDEO PRO — editor de video web y PWA",
+  "scripts": {
+    "start": "py -m http.server 8123"
+  }
+}
