@@ -214,11 +214,94 @@ function effectsPanelHTML() {
 }
 
 function aiPanelHTML() {
+  const quota = checkAIQuota();
+  const reward = rewardActive();
+  const voices = typeof window !== "undefined" && window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+  const esVoices = voices.filter((v) => String(v.lang || "").toLowerCase().startsWith("es"));
+
   return `
-    <div class="ai-card">
-      <h3>Estudio IA Profesional</h3>
-      <p>Abre la pantalla completa estilo Canva con generador de video, música y voz en off.</p>
-      <button class="btn primary wide" data-action="open-ai-studio" style="margin-top:10px">✨ Abrir Estudio IA Completo</button>
+    <div style="margin-bottom:12px; font-weight:700; font-size:15px; display:flex; align-items:center; justify-content:space-between;">
+      <span>✨ Estudio IA Profesional</span>
+      <button class="btn tiny primary" data-action="open-ai-studio">Ampliar</button>
+    </div>
+
+    <!-- Video & Images Card -->
+    <div class="ai-card" style="margin-bottom:14px;">
+      <h3>🎬 Creador de Video & Imágenes</h3>
+      <p>Describe tu idea para generar un vídeo completo con escenas e imágenes reales de Pollinations AI.</p>
+      <div class="field-row" style="margin-top:8px">
+        <label>Idea o guion</label>
+        <textarea class="textarea" id="panelAiIdea" rows="3" placeholder="Ej: Paisaje ciberespacial futurista con neón violeta..."></textarea>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>Escenas</label>
+        <select class="select" id="panelAiScenes">
+          <option value="3">3 escenas</option>
+          <option value="4" selected>4 escenas</option>
+          <option value="5">5 escenas</option>
+          <option value="6">6 escenas</option>
+        </select>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>Estilo visual</label>
+        <select class="select" id="panelAiStyle">
+          <option value="cinematico">Cinemático dramático</option>
+          <option value="neon">Neón Cyberpunk</option>
+          <option value="minimal">Minimalista elegante</option>
+          <option value="realista">Fotorealista</option>
+          <option value="ilustracion">Ilustración digital</option>
+        </select>
+      </div>
+      <div class="quota-badge" style="margin-top:8px">
+        Usos de IA hoy: <strong>${quota.unlimited ? "Ilimitados (Premium/Pro)" : `${quota.remaining} de ${quota.limit} disponibles`}</strong>
+      </div>
+      <button class="btn primary wide" data-action="panel-ai-create" style="margin-top:10px">Generar Video con IA</button>
+    </div>
+
+    <!-- Music Card -->
+    <div class="ai-card" style="margin-bottom:14px;">
+      <h3>🎵 Creador de Música + Subir Audio</h3>
+      <p>Genera bases instrumentales instantáneas o sube tus canciones .mp3/.wav.</p>
+      
+      <div style="margin:10px 0; padding:10px; border:2px dashed var(--line-strong); border-radius:10px; text-align:center;">
+        <p style="margin:0 0 6px; font-size:12px; font-weight:600;">Sube tu música (.mp3 / .wav)</p>
+        <button class="btn primary tiny" data-action="panel-upload-music">Seleccionar archivo</button>
+      </div>
+
+      <div class="field-row" style="margin-top:8px">
+        <label>Género Instrumental</label>
+        <select class="select" id="panelMusicGenre">
+          <option value="electronica">Electrónica / Dance</option>
+          <option value="reggaeton">Reggaetón / Urbano</option>
+          <option value="lofi">Lo-Fi Chill</option>
+          <option value="cinematico">Cinemático Épico</option>
+        </select>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>BPM</label>
+        <input type="range" class="range" id="panelMusicBpm" min="80" max="160" step="4" value="120">
+      </div>
+      <button class="btn accent wide" data-action="panel-ai-music" style="margin-top:8px">Generar e Insertar Música IA</button>
+    </div>
+
+    <!-- Voiceover Card -->
+    <div class="ai-card" style="margin-bottom:14px;">
+      <h3>🎙️ Guiones y Voz en Off con IA</h3>
+      <p>Convierte texto en voz natural hablada mediante Web Speech API.</p>
+      <div class="field-row" style="margin-top:8px">
+        <label>Texto a narrar</label>
+        <textarea class="textarea" id="panelVoiceText" rows="3" placeholder="Escribe el texto para la voz en off..."></textarea>
+      </div>
+      <div class="field-row" style="margin-top:8px">
+        <label>Voz</label>
+        <select class="select" id="panelVoiceSelect">
+          ${esVoices.length ? esVoices.map((v) => `<option value="${v.voiceURI}">${v.name} (${v.lang})</option>`).join("") : `<option value="">Voz predeterminada del sistema</option>`}
+        </select>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn ghost" data-action="panel-voice-speak" style="flex:1">Escuchar voz</button>
+        <button class="btn primary" data-action="panel-voice-add" style="flex:1">Añadir al vídeo</button>
+      </div>
     </div>
   `;
 }
@@ -428,6 +511,83 @@ function onPanelClick(e) {
 
   if (action === "open-ai-studio" || action === "open-ai-music") {
     openAiStudioModal();
+    return;
+  }
+
+  if (action === "panel-ai-create") {
+    const idea = $("#panelAiIdea")?.value.trim();
+    const scenes = Number($("#panelAiScenes")?.value || 4);
+    const style = $("#panelAiStyle")?.value || "cinematico";
+    if (!idea) { toast("Escribe una idea para el video.", "err"); return; }
+    toast("Iniciando generación de vídeo con IA...", "ok");
+    generateAIVideo({
+      idea,
+      scenes,
+      style,
+      onProgress: ({ message }) => toast(message, ""),
+    }).then(() => {
+      toast("¡Vídeo con IA generado y montado con éxito!", "ok", 6000);
+    }).catch(err => {
+      toast("Error en IA: " + (err.message || err), "err", 7000);
+    });
+    return;
+  }
+
+  if (action === "panel-upload-music") {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "audio/*";
+    input.onchange = async (ev) => {
+      const file = ev.target.files?.[0];
+      if (file) {
+        await importAudioBlob(file, { name: file.name, fileName: file.name });
+        toast("Música subida correctamente.", "ok");
+        renderPanel();
+      }
+    };
+    input.click();
+    return;
+  }
+
+  if (action === "panel-ai-music") {
+    const genre = $("#panelMusicGenre")?.value || "electronica";
+    const bpm = Number($("#panelMusicBpm")?.value || 120);
+    generateAIMusic({ genre, bpm }).then(() => {
+      toast("¡Música instrumental generada e insertada!", "ok");
+      renderPanel();
+    }).catch(err => toast("Error: " + (err.message || err), "err"));
+    return;
+  }
+
+  if (action === "panel-voice-speak") {
+    const text = $("#panelVoiceText")?.value.trim();
+    if (!text) { toast("Escribe un texto.", "err"); return; }
+    if (window.speechSynthesis) {
+      const utter = new SpeechSynthesisUtterance(text);
+      const voiceURI = $("#panelVoiceSelect")?.value;
+      const voices = window.speechSynthesis.getVoices() || [];
+      const v = voices.find(v => v.voiceURI === voiceURI);
+      if (v) utter.voice = v;
+      utter.lang = "es-ES";
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utter);
+      toast("Reproduciendo voz en off...", "");
+    }
+    return;
+  }
+
+  if (action === "panel-voice-add") {
+    const text = $("#panelVoiceText")?.value.trim();
+    if (!text) { toast("Escribe un texto.", "err"); return; }
+    const voiceURI = $("#panelVoiceSelect")?.value;
+    snapshot("Añadir voz IA");
+    const duration = Math.max(2, Math.min(30, text.split(/\s+/).length * 0.45));
+    const clip = createTextClip({ content: text, start: store.time, duration });
+    clip.name = `Voz IA · ${text.slice(0, 20)}`;
+    clip.voiceover = { text, voiceURI, rate: 1, pitch: 1 };
+    addClip("t-text", clip);
+    emit("project");
+    toast("Narración y subtítulos añadidos a la línea de tiempo.", "ok");
     return;
   }
 
