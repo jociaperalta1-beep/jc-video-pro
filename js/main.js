@@ -251,6 +251,18 @@ function bindUI() {
     }
   });
 
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const id = btn.id;
+    if (id === "btnAuth") openAuthModal();
+    else if (id === "btnTutorial") openTutorialModal();
+    else if (id === "btnSupport") openSupportModal();
+    else if (id === "btnExport") openExportModal();
+    else if (id === "btnPremium") openPremiumModal();
+    else if (id === "btnLang") { /* Already handled in bindUI, but as backup */ }
+  });
+
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden" && store.dirty) saveNow(false);
