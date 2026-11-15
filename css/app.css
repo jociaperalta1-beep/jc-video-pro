@@ -579,8 +579,9 @@ input[type="color"] {
   background: rgba(3, 2, 10, 0.75); backdrop-filter: blur(7px);
   display: grid; place-items: center; padding: 18px;
   animation: fadeIn 0.16s ease;
+  pointer-events: auto;
 }
-.modal-backdrop[hidden] { display: none; }
+.modal-backdrop[hidden] { display: none; pointer-events: none; }
 .modal {
   width: min(560px, 100%); max-height: min(86vh, 900px); overflow-y: auto;
   background: linear-gradient(180deg, #14112b, #0c0a1d);
