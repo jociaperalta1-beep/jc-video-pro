@@ -13,6 +13,15 @@
 <link rel="stylesheet" href="css/styles.css">
 <!-- Supabase SDK JS -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(registrations => {
+      for (let registration of registrations) {
+        registration.unregister();
+      }
+    });
+  }
+</script>
 </head>
 <body>
 
