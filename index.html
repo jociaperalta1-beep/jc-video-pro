@@ -221,5 +221,71 @@
 </div>
 
 <script type="module" src="js/main.js"></script>
+<style>
+    .global-modal-backdrop { position: fixed; inset: 0; z-index: 999999; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); display: none; place-items: center; }
+    .global-modal-backdrop.active { display: grid; }
+    .global-modal { background: #14112b; padding: 25px; border-radius: 20px; width: 90%; max-width: 600px; color: #fff; position: relative; border: 1px solid #7c3aed; }
+    .modal-close-btn { position: absolute; top: 15px; right: 15px; cursor: pointer; font-size: 20px; background: none; border: none; color: #fff; }
+</style>
+<div id="globalModalBackdrop" class="global-modal-backdrop">
+    <div class="global-modal" id="globalModal">
+        <button class="modal-close-btn" onclick="document.getElementById('globalModalBackdrop').classList.remove('active')">✕</button>
+        <div id="modalContent"></div>
+    </div>
+</div>
+
+<script>
+    window.supabaseClient = supabase.createClient('https://supabase.co', 'sb_publishable_G7QGUn6nlRPWsvuBn6rgPA_6ix3acAL');
+
+    function showModal(title, html) {
+        document.getElementById('modalContent').innerHTML = `<h2>${title}</h2>` + html;
+        document.getElementById('globalModalBackdrop').classList.add('active');
+    }
+
+    window.openAuthModal = () => showModal("Iniciar sesión", `
+        <button onclick="alert('Google Auth')">Continuar con Google</button>
+        <div class="modal-form">
+            <input type="email" placeholder="Correo" id="authE">
+            <div style="position:relative"><input type="password" placeholder="Contraseña" id="authP"><button onclick="const p=document.getElementById('authP'); p.type=p.type==='password'?'text':'password'">👁️</button></div>
+            <a href="#" onclick="alert('Recuperar')">¿Olvidaste tu contraseña?</a>
+        </div>
+    `);
+
+    window.openAiStudioModal = () => showModal("Estudio IA Completo", `
+        <div class="ai-tabs">
+            <button onclick="document.getElementById('aiTabContent').innerHTML='Video IA'">🎬 Crear Video</button>
+            <button onclick="document.getElementById('aiTabContent').innerHTML='Música IA'">🎵 Crear Música</button>
+            <button onclick="document.getElementById('aiTabContent').innerHTML='Voz IA'">🎙️ Voz en Off</button>
+        </div>
+        <div id="aiTabContent">Elige una opción</div>
+    `);
+
+    window.openTutorialModal = () => showModal("Tutorial", `<div style="padding:20px;">Video tutorial aquí... Guía 5 pasos...</div>`);
+
+    window.openSupportModal = () => showModal("Soporte", `<div class="modal-form"><textarea id="supMsg" placeholder="Consulta a soporte@jcads.net..."></textarea><button onclick="alert('Enviado')">Enviar</button></div>`);
+
+    window.openExportModal = () => showModal("Exportar", `<div>Opciones de exportación...</div>`);
+    window.openPremiumModal = () => showModal("Planes Premium", `<div>Planes: Free, Premium, Pro...</div>`);
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const txt = btn.textContent.trim().toLowerCase();
+        
+        if (txt.includes('iniciar sesión') || txt.includes('login')) window.openAuthModal();
+        else if (btn.id === 'btnTutorial' || txt.includes('tutorial')) window.openTutorialModal();
+        else if (btn.id === 'btnSupport' || txt.includes('soporte')) window.openSupportModal();
+        else if (btn.id === 'btnExport' || txt.includes('exportar')) window.openExportModal();
+        else if (btn.id === 'btnPremium' || txt.includes('premium')) window.openPremiumModal();
+        else if (btn.dataset.panel === 'ai' || txt === 'ia') {
+            document.getElementById('sidePanel').classList.add('show-panel');
+            window.openAiStudioModal();
+        }
+        else if (btn.id === 'btnLang' || txt.includes('es ▾') || txt.includes('en ▾')) {
+            const menu = document.getElementById('langMenu');
+            menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
+        }
+    }, true);
+</script>
 </body>
 </html>
