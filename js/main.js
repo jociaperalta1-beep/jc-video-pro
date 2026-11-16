@@ -17,6 +17,7 @@ import { Renderer } from "./renderer.js";
 import { initTimeline } from "./timeline.js";
 import { initInspector } from "./inspector.js";
 import { initPanels } from "./panels.js";
+import { initPremium, openPremiumModal, updateRibbon } from "./premium.js";
 import { formatVideoEmbedUrl, getMonetization } from "./monetization.js";
 import { initExporter } from "./exporter.js";
 import { bindModal, openModal, closeModal, toast, confirmAction } from "./ui.js";
